@@ -31,7 +31,7 @@ const (
 
 func TestExplicitProfileUsage(t *testing.T) {
 	c := NewParallelCLI(t)
-	const projectName = "compose-e2e-profiles"
+	const projectName = "compose-e2e-explicit-profiles"
 	const profileName = "test-profile"
 
 	t.Run("compose up with profile", func(t *testing.T) {
@@ -132,7 +132,7 @@ func TestNoProfileUsage(t *testing.T) {
 
 func TestActiveProfileViaTargetedService(t *testing.T) {
 	c := NewParallelCLI(t)
-	const projectName = "compose-e2e-profiles-via-target-service"
+	const projectName = "compose-e2e-via-target-service-profiles"
 	const profileName = "test-profile"
 
 	t.Run("compose up with service name", func(t *testing.T) {
@@ -183,5 +183,25 @@ func TestActiveProfileViaTargetedService(t *testing.T) {
 	t.Run("check containers after down", func(t *testing.T) {
 		res := c.RunDockerCmd(t, "ps")
 		assert.Assert(t, !strings.Contains(res.Combined(), projectName), res.Combined())
+	})
+}
+
+func TestDotEnvProfileUsage(t *testing.T) {
+	c := NewParallelCLI(t)
+	const projectName = "compose-e2e-dotenv-profiles"
+	const profileName = "test-profile"
+
+	t.Cleanup(func() {
+		_ = c.RunDockerComposeCmd(t, "--project-name", projectName, "down")
+	})
+
+	t.Run("compose up with profile", func(t *testing.T) {
+		res := c.RunDockerComposeCmd(t, "-f", "./fixtures/profiles/compose.yaml",
+			"--env-file", "./fixtures/profiles/test-profile.env",
+			"-p", projectName, "--profile", profileName, "up", "-d")
+		res.Assert(t, icmd.Expected{ExitCode: 0})
+		res = c.RunDockerComposeCmd(t, "-p", projectName, "ps")
+		res.Assert(t, icmd.Expected{Out: regularService})
+		res.Assert(t, icmd.Expected{Out: profiledService})
 	})
 }

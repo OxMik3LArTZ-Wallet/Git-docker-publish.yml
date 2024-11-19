@@ -21,6 +21,7 @@ import (
 	"os"
 
 	"github.com/docker/cli/cli"
+	"github.com/docker/cli/cli/command"
 	"github.com/docker/compose/v2/pkg/api"
 	"github.com/spf13/cobra"
 )
@@ -33,7 +34,7 @@ type waitOptions struct {
 	downProject bool
 }
 
-func waitCommand(p *ProjectOptions, backend api.Service) *cobra.Command {
+func waitCommand(p *ProjectOptions, dockerCli command.Cli, backend api.Service) *cobra.Command {
 	opts := waitOptions{
 		ProjectOptions: p,
 	}
@@ -42,11 +43,11 @@ func waitCommand(p *ProjectOptions, backend api.Service) *cobra.Command {
 	var err error
 	cmd := &cobra.Command{
 		Use:   "wait SERVICE [SERVICE...] [OPTIONS]",
-		Short: "Block until the first service container stops",
+		Short: "Block until containers of all (or specified) services stop.",
 		Args:  cli.RequiresMinArgs(1),
 		RunE: Adapt(func(ctx context.Context, services []string) error {
 			opts.services = services
-			statusCode, err = runWait(ctx, backend, &opts)
+			statusCode, err = runWait(ctx, dockerCli, backend, &opts)
 			return err
 		}),
 		PostRun: func(cmd *cobra.Command, args []string) {
@@ -59,8 +60,8 @@ func waitCommand(p *ProjectOptions, backend api.Service) *cobra.Command {
 	return cmd
 }
 
-func runWait(ctx context.Context, backend api.Service, opts *waitOptions) (int64, error) {
-	_, name, err := opts.projectOrName()
+func runWait(ctx context.Context, dockerCli command.Cli, backend api.Service, opts *waitOptions) (int64, error) {
+	_, name, err := opts.projectOrName(ctx, dockerCli)
 	if err != nil {
 		return 0, err
 	}

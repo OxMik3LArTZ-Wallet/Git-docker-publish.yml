@@ -21,7 +21,8 @@ package e2e
 
 import (
 	"context"
-	"os"
+	"errors"
+	"fmt"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -45,9 +46,6 @@ func TestUpServiceUnhealthy(t *testing.T) {
 }
 
 func TestUpDependenciesNotStopped(t *testing.T) {
-	if _, ok := os.LookupEnv("CI"); ok {
-		t.Skip("Skipping test on CI... flaky")
-	}
 	c := NewParallelCLI(t, WithEnv(
 		"COMPOSE_PROJECT_NAME=up-deps-stop",
 	))
@@ -73,11 +71,12 @@ func TestUpDependenciesNotStopped(t *testing.T) {
 	testCmd := c.NewDockerComposeCmd(t,
 		"-f=./fixtures/ups-deps-stop/compose.yaml",
 		"up",
+		"--menu=false",
 		"app",
 	)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	t.Cleanup(cancel)
 
 	cmd, err := StartWithNewGroupID(ctx, testCmd, upOut, nil)
 	assert.NilError(t, err, "Failed to run compose up")
@@ -91,13 +90,15 @@ func TestUpDependenciesNotStopped(t *testing.T) {
 	require.NoError(t, syscall.Kill(-cmd.Process.Pid, syscall.SIGINT),
 		"Failed to send SIGINT to compose up process")
 
-	time.AfterFunc(5*time.Second, cancel)
-
 	t.Log("Waiting for `compose up` to exit")
 	err = cmd.Wait()
 	if err != nil {
-		exitErr := err.(*exec.ExitError)
-		require.EqualValues(t, exitErr.ExitCode(), 130)
+		var exitErr *exec.ExitError
+		errors.As(err, &exitErr)
+		if exitErr.ExitCode() == -1 {
+			t.Fatalf("`compose up` was killed: %v", err)
+		}
+		require.EqualValues(t, 130, exitErr.ExitCode())
 	}
 
 	RequireServiceState(t, c, "app", "exited")
@@ -165,4 +166,29 @@ func TestUpWithDependencyNotRequired(t *testing.T) {
 		"--profile", "not-required", "up", "-d")
 	assert.Assert(t, strings.Contains(res.Combined(), "foo"), res.Combined())
 	assert.Assert(t, strings.Contains(res.Combined(), " optional dependency \"bar\" failed to start"), res.Combined())
+}
+
+func TestUpWithAllResources(t *testing.T) {
+	c := NewCLI(t)
+	const projectName = "compose-e2e-all-resources"
+	t.Cleanup(func() {
+		c.RunDockerComposeCmd(t, "--project-name", projectName, "down", "-v")
+	})
+
+	res := c.RunDockerComposeCmd(t, "-f", "./fixtures/resources/compose.yaml", "--all-resources", "--project-name", projectName, "up")
+	assert.Assert(t, strings.Contains(res.Combined(), fmt.Sprintf(`Volume "%s_my_vol"  Created`, projectName)), res.Combined())
+	assert.Assert(t, strings.Contains(res.Combined(), fmt.Sprintf(`Network %s_my_net  Created`, projectName)), res.Combined())
+}
+
+func TestUpProfile(t *testing.T) {
+	c := NewCLI(t)
+	const projectName = "compose-e2e-up-profile"
+	t.Cleanup(func() {
+		c.RunDockerComposeCmd(t, "--project-name", projectName, "--profile", "test", "down", "-v")
+	})
+
+	res := c.RunDockerComposeCmd(t, "-f", "./fixtures/profiles/docker-compose.yaml", "--project-name", projectName, "up", "foo")
+	assert.Assert(t, strings.Contains(res.Combined(), `Container db_c  Created`), res.Combined())
+	assert.Assert(t, strings.Contains(res.Combined(), `Container foo_c  Created`), res.Combined())
+	assert.Assert(t, !strings.Contains(res.Combined(), `Container bar_c  Created`), res.Combined())
 }

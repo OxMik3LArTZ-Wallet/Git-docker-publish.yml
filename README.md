@@ -1,6 +1,5 @@
 # Table of Contents
 - [Docker Compose v2](#docker-compose-v2)
-- [About update and backward compatibility](#about-update-and-backward-compatibility)
 - [Where to get Docker Compose](#where-to-get-docker-compose)
     + [Windows and macOS](#windows-and-macos)
     + [Linux](#linux)
@@ -53,7 +52,7 @@ Quick Start
 Using Docker Compose is a three-step process:
 1. Define your app's environment with a `Dockerfile` so it can be
    reproduced anywhere.
-2. Define the services that make up your app in `docker-compose.yml` so
+2. Define the services that make up your app in `compose.yaml` so
    they can be run together in an isolated environment.
 3. Lastly, run `docker compose up` and Compose will start and run your entire
    app.

@@ -29,6 +29,8 @@ import (
 	commands "github.com/docker/compose/v2/cmd/compose"
 	"github.com/docker/compose/v2/internal/tracing"
 	"github.com/spf13/cobra"
+	flag "github.com/spf13/pflag"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -42,17 +44,20 @@ import (
 // vars, creates a root span for the command, and wraps the actual
 // command invocation to ensure the span is properly finalized and
 // exported before exit.
-func Setup(cmd *cobra.Command, dockerCli command.Cli) error {
+func Setup(cmd *cobra.Command, dockerCli command.Cli, args []string) error {
 	tracingShutdown, err := tracing.InitTracing(dockerCli)
 	if err != nil {
 		return fmt.Errorf("initializing tracing: %w", err)
 	}
 
 	ctx := cmd.Context()
-	ctx, cmdSpan := tracing.Tracer.Start(
+	ctx, cmdSpan := otel.Tracer("").Start(
 		ctx,
 		"cli/"+strings.Join(commandName(cmd), "-"),
 	)
+	cmdSpan.SetAttributes(attribute.StringSlice("cli.args", args))
+	cmdSpan.SetAttributes(attribute.StringSlice("cli.flags", getFlags(cmd.Flags())))
+
 	cmd.SetContext(ctx)
 	wrapRunE(cmd, cmdSpan, tracingShutdown)
 	return nil
@@ -100,7 +105,7 @@ func wrapRunE(c *cobra.Command, cmdSpan trace.Span, tracingShutdown tracing.Shut
 		if tracingShutdown != nil {
 			// use background for root context because the cmd's context might have
 			// been canceled already
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 			defer cancel()
 			// TODO(milas): add an env var to enable logging from the
 			// OTel components for debugging purposes
@@ -128,4 +133,12 @@ func commandName(cmd *cobra.Command) []string {
 	}
 	sort.Sort(sort.Reverse(sort.StringSlice(name)))
 	return name
+}
+
+func getFlags(fs *flag.FlagSet) []string {
+	var result []string
+	fs.Visit(func(flag *flag.Flag) {
+		result = append(result, flag.Name)
+	})
+	return result
 }

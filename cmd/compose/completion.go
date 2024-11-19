@@ -20,6 +20,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/docker/cli/cli/command"
 	"github.com/docker/compose/v2/pkg/api"
 	"github.com/spf13/cobra"
 )
@@ -33,19 +34,21 @@ func noCompletion() validArgsFn {
 	}
 }
 
-func completeServiceNames(p *ProjectOptions) validArgsFn {
+func completeServiceNames(dockerCli command.Cli, p *ProjectOptions) validArgsFn {
 	return func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		project, err := p.ToProject(nil)
+		p.Offline = true
+		project, _, err := p.ToProject(cmd.Context(), dockerCli, nil)
 		if err != nil {
 			return nil, cobra.ShellCompDirectiveNoFileComp
 		}
-		var serviceNames []string
-		for _, s := range project.ServiceNames() {
+		var values []string
+		serviceNames := append(project.ServiceNames(), project.DisabledServiceNames()...)
+		for _, s := range serviceNames {
 			if toComplete == "" || strings.HasPrefix(s, toComplete) {
-				serviceNames = append(serviceNames, s)
+				values = append(values, s)
 			}
 		}
-		return serviceNames, cobra.ShellCompDirectiveNoFileComp
+		return values, cobra.ShellCompDirectiveNoFileComp
 	}
 }
 
@@ -67,9 +70,10 @@ func completeProjectNames(backend api.Service) func(cmd *cobra.Command, args []s
 	}
 }
 
-func completeProfileNames(p *ProjectOptions) validArgsFn {
+func completeProfileNames(dockerCli command.Cli, p *ProjectOptions) validArgsFn {
 	return func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		project, err := p.ToProject(nil)
+		p.Offline = true
+		project, _, err := p.ToProject(cmd.Context(), dockerCli, nil)
 		if err != nil {
 			return nil, cobra.ShellCompDirectiveNoFileComp
 		}

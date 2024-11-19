@@ -18,20 +18,21 @@ package compose
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	containerType "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/errdefs"
 
 	"github.com/docker/compose/v2/pkg/api"
 	"github.com/docker/compose/v2/pkg/progress"
 	"github.com/docker/compose/v2/pkg/utils"
 
-	"github.com/compose-spec/compose-go/types"
+	"github.com/compose-spec/compose-go/v2/types"
 	moby "github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/filters"
-	"github.com/pkg/errors"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -111,7 +112,7 @@ func (s *composeService) start(ctx context.Context, projectName string, options 
 	}
 
 	var containers Containers
-	containers, err := s.apiClient().ContainerList(ctx, moby.ContainerListOptions{
+	containers, err := s.apiClient().ContainerList(ctx, containerType.ListOptions{
 		Filters: filters.NewArgs(
 			projectFilter(project.Name),
 			oneOffFilter(false),
@@ -128,7 +129,7 @@ func (s *composeService) start(ctx context.Context, projectName string, options 
 			return err
 		}
 
-		return s.startService(ctx, project, service, containers)
+		return s.startService(ctx, project, service, containers, listener, options.WaitTimeout)
 	})
 	if err != nil {
 		return err
@@ -148,9 +149,9 @@ func (s *composeService) start(ctx context.Context, projectName string, options 
 			defer cancel()
 		}
 
-		err = s.waitDependencies(ctx, project, depends, containers)
+		err = s.waitDependencies(ctx, project, project.Name, depends, containers, 0)
 		if err != nil {
-			if ctx.Err() == context.DeadlineExceeded {
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				return fmt.Errorf("application not healthy after %s", options.WaitTimeout)
 			}
 			return err
@@ -213,13 +214,13 @@ func (s *composeService) watchContainers(ctx context.Context, //nolint:gocyclo
 	}
 
 	var (
-		expected []string
+		expected = utils.NewSet[string]()
 		watched  = map[string]int{}
 		replaced []string
 	)
 	for _, c := range containers {
 		if isRequired(c) {
-			expected = append(expected, c.ID)
+			expected.Add(c.ID)
 		}
 		watched[c.ID] = 0
 	}
@@ -241,7 +242,7 @@ func (s *composeService) watchContainers(ctx context.Context, //nolint:gocyclo
 					// be able to inspect in time before they're gone from the
 					// API, so just remove the watch without erroring
 					delete(watched, event.Container)
-					expected = utils.Remove(expected, event.Container)
+					expected.Remove(event.Container)
 					return nil
 				}
 				return err
@@ -252,10 +253,14 @@ func (s *composeService) watchContainers(ctx context.Context, //nolint:gocyclo
 				Labels: inspected.Config.Labels,
 			}
 			name := getContainerNameWithoutProject(container)
-
 			service := container.Labels[api.ServiceLabel]
 			switch event.Status {
 			case "stop":
+				if inspected.State.Running {
+					// on sync+restart action the container stops -> dies -> start -> restart
+					// we do not want to stop the current container, we want to restart it
+					return nil
+				}
 				if _, ok := watched[container.ID]; ok {
 					eType := api.ContainerEventStopped
 					if utils.Contains(replaced, container.ID) {
@@ -267,16 +272,22 @@ func (s *composeService) watchContainers(ctx context.Context, //nolint:gocyclo
 						Container: name,
 						ID:        container.ID,
 						Service:   service,
+						ExitCode:  inspected.State.ExitCode,
 					})
 				}
 
 				delete(watched, container.ID)
-				expected = utils.Remove(expected, container.ID)
+				expected.Remove(container.ID)
 			case "die":
 				restarted := watched[container.ID]
 				watched[container.ID] = restarted + 1
 				// Container terminated.
 				willRestart := inspected.State.Restarting
+				if inspected.State.Running {
+					// on sync+restart action inspected.State.Restarting is false,
+					// however the container is already running before it restarts
+					willRestart = true
+				}
 
 				eType := api.ContainerEventExit
 				if utils.Contains(replaced, container.ID) {
@@ -296,7 +307,7 @@ func (s *composeService) watchContainers(ctx context.Context, //nolint:gocyclo
 				if !willRestart {
 					// we're done with this one
 					delete(watched, container.ID)
-					expected = utils.Remove(expected, container.ID)
+					expected.Remove(container.ID)
 				}
 			case "start":
 				count, ok := watched[container.ID]
@@ -304,7 +315,7 @@ func (s *composeService) watchContainers(ctx context.Context, //nolint:gocyclo
 				if !ok {
 					// A new container has just been added to service by scale
 					watched[container.ID] = 0
-					expected = append(expected, container.ID)
+					expected.Add(container.ID)
 					mustAttach = true
 				}
 				if mustAttach {
@@ -321,17 +332,15 @@ func (s *composeService) watchContainers(ctx context.Context, //nolint:gocyclo
 					if err != nil {
 						return err
 					}
-					if utils.StringContains(expected, id) {
-						expected = append(expected, inspected.ID)
+					if expected.Has(id) {
+						expected.Add(inspected.ID)
+						expected.Add(container.ID)
 					}
 					watched[container.ID] = 1
-					if utils.Contains(expected, id) {
-						expected = append(expected, container.ID)
-					}
 				} else if ofInterest(container) {
 					watched[container.ID] = 1
 					if isRequired(container) {
-						expected = append(expected, container.ID)
+						expected.Add(container.ID)
 					}
 				}
 			}

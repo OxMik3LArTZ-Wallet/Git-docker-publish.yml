@@ -18,10 +18,7 @@ package locker
 
 import (
 	"fmt"
-	"os"
-
-	"github.com/adrg/xdg"
-	"github.com/docker/docker/pkg/pidfile"
+	"path/filepath"
 )
 
 type Pidfile struct {
@@ -29,13 +26,10 @@ type Pidfile struct {
 }
 
 func NewPidfile(projectName string) (*Pidfile, error) {
-	path, err := xdg.RuntimeFile(fmt.Sprintf("docker-compose.%s.pid", projectName))
+	run, err := runDir()
 	if err != nil {
 		return nil, err
 	}
+	path := filepath.Join(run, fmt.Sprintf("%s.pid", projectName))
 	return &Pidfile{path: path}, nil
-}
-
-func (f *Pidfile) Lock() error {
-	return pidfile.Write(f.path, os.Getpid())
 }
